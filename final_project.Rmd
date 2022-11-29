@@ -17,6 +17,7 @@ library(feasts)
 library(tidycensus)
 library(janitor) #used to clean up column names
 library(lubridate) #used to convert column values to date/dateime
+library(modelr)
 
 # Set your filepath here! Or, set this up as an .Rproj if you'd like.
 rootdir <- ("/Users/michelle/Documents/UCSB Grad School/Courses/eds_222")
@@ -70,7 +71,9 @@ top_sgip_zip
 ```{r}
 #access ACS data variables for 2020 year 
 v20 <- load_variables(2020, "acs5", cache = TRUE)
-View(v20)
+#View(v20)
+
+#v19 <- load_variables(2019, "acs5", cache = TRUE)
 
 #read in per capita income data for census tracts in CA
 ca_pc_income_tract <- get_acs(geography = "tract",
@@ -141,19 +144,40 @@ combined_all <- left_join(sgip_zip_census, combine_census, by = "tract") |>
 ### Visualize Data
 
 ```{r}
-ggplot(data = combined_all) +
-  geom_point(aes(x = percapita_income, y = percapita_application)) +
+ggplot(data = combined_all, aes(x = percapita_income, y = percapita_application)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y~x, se = FALSE, size = 1) +
   labs(x = "Per Capita Income", y = "Per Capita Application", title = "SGIP Applications Per Capita and Income Per Capita (2020)") +
   theme_minimal()
 ```
 
 ### Run Linear Regression
 ```{r}
-model = lm(percapita_application ~ percapita_income, data = combined_all)
-summary(model)
+model <- lm(percapita_application ~ percapita_income, data = combined_all)
 
 R2 = summary(model)$r.squared
 R2
+```
+
+### Check OLS Assumptions
+```{r}
+#get a predicted value for every observation (generate a column of predictions called pred)
+#then use predictions to compute residuals (actual - prediction) -> add column called residuals
+predictions <- combined_all |> 
+  add_predictions(model) |> 
+  mutate(residuals = percapita_application - pred)
+
+#test assumption that errors are normally distributed
+ggplot(data = predictions) +
+  geom_histogram(aes(residuals))
+
+#test assumption that the mean of errors is zero
+mean(predictions$residuals, na.rm = TRUE)
+
+#test assumption that error has constant variance in x
+#looking for no structured correlation
+ggplot(predictions) +
+  geom_point(aes(x=percapita_income, y=residuals))
 ```
 
 ```{r}
