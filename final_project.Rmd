@@ -1,5 +1,5 @@
 ---
-title: "Final Project"
+title: "Income Effects on SGIP Applications"
 author: "Michelle Lam"
 date: "2022-11-18"
 output: html_document
@@ -12,18 +12,19 @@ knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(readr)
 library(gt)
-library(tufte)
-library(feasts)
 library(tidycensus)
-library(janitor) #used to clean up column names
-library(lubridate) #used to convert column values to date/dateime
+library(janitor)
+library(lubridate)
 library(modelr)
+library(gridExtra)
+library(car)
 
-# Set your filepath here! Or, set this up as an .Rproj if you'd like.
+# setting my file path
 rootdir <- ("/Users/michelle/Documents/UCSB Grad School/Courses/eds_222")
 setwd(file.path(rootdir,"eds222_final_project"))
 datadir <-(file.path(rootdir, "eds222_final_project","data"))
 
+#
 census_token <- Sys.getenv('CENSUS_KEY')
 census_api_key(census_token)
 ```
@@ -35,23 +36,37 @@ census_api_key(census_token)
 sgip <- read_csv(file.path(datadir,"sgip_weekly_data.csv")) |> 
   janitor::clean_names()
 
-#filter down to rebates for just residential electrochemcial storage that were not cancelled, 2020 year
-#look into difference between residential and single family/multi-family
+#filter down to rebates for just residential electrochemcial storage that were not cancelled, format date and zip, create columns for pre_post_resiliency
 sgip_res_battery <- sgip |> 
-  filter(equipment_type == "Electrochemical Storage", host_customer_sector == "Residential", budget_classification != "Cancelled") |>
-  select("city", "county", "zip", "date_received") |> 
+  filter(equipment_type == "Electrochemical Storage", host_customer_sector %in% c("Residential", "Single Family"), budget_classification != "Cancelled") |>
+  select("city", "county", "zip", "date_received", "budget_category", "host_customer_sector") |> 
   mutate("date_received" = str_sub(date_received, 1, 8)) |> 
   mutate("date_received" = as.Date(date_received, format = "%m/%d/%y")) |>
   mutate("year_received" = year(date_received)) |>
   mutate("month_received" = month(date_received)) |> 
-  filter(year_received == 2020) |> 
+  mutate("pre_post_resiliency" = ifelse(
+    year_received >= 2020, 
+    "post resiliency",
+    "pre resiliency")) |> 
   mutate("zip" = ifelse(
     str_length(zip) == 10, 
     substring(zip, 1, nchar(zip)-5),
     zip))
 
-#create summary data frame showing number of applications by zip code
-sgip_zip <- sgip_res_battery |> 
+#create sgip dataset filtered for 2020
+sgip_2020 <- sgip_res_battery |> 
+  filter(year_received == 2020)
+
+sgip_2020_budget <- sgip_2020 |> 
+  group_by(budget_category) |> 
+  summarize(count = n())
+
+sgip_2020_customer_sector <- sgip_2020 |> 
+  group_by(host_customer_sector) |> 
+  summarize(count = n())
+
+#create summary data frame showing number of applications by zip code in 2020
+sgip_zip_2020 <- sgip_2020 |> 
   group_by(zip) |> 
   summarize(count = n())
 ```
@@ -59,11 +74,19 @@ sgip_zip <- sgip_res_battery |>
 ### Exploratory Data Visualization of SGIP Data
 
 ```{r}
-top_sgip_zip <- sgip_zip |> 
+top_sgip_zip <- sgip_zip_2020 |> 
   slice_max(n = 10, order_by = count) |> 
   gt()
 
 top_sgip_zip
+
+#show how applications have changed over time
+sgip_zip_all_time <- sgip_res_battery |> 
+  group_by(year_received) |> 
+  summarize(count = n())
+
+ggplot(data = sgip_zip_all_time, aes(x = year_received, y = count)) +
+  geom_line()
 ```
 
 ### Census Data Wrangling
@@ -71,9 +94,6 @@ top_sgip_zip
 ```{r}
 #access ACS data variables for 2020 year 
 v20 <- load_variables(2020, "acs5", cache = TRUE)
-#View(v20)
-
-#v19 <- load_variables(2019, "acs5", cache = TRUE)
 
 #read in per capita income data for census tracts in CA
 ca_pc_income_tract <- get_acs(geography = "tract",
@@ -103,33 +123,71 @@ combine_census <- cbind(ca_pc_income_tract_clean, ca_pop_tract_clean$population)
 
 ```
 
-### Crosswalk File 
+### Crosswalk File
+
 ```{r}
-#read in crosswalk file to use when matching zip codes to
+#read in crosswalk file to use when matching zip codes to census tracts
 crosswalk <- read_csv(file.path(datadir,"ZIP_TRACT_122020.csv")) |> 
   janitor::clean_names()
-
-#add zipcode from crosswalk file to combined census file
-# census_with_zip <- left_join(combine_census, crosswalk, by = "tract") |> 
-#   select(c("tract", "NAME", "percapita_income", "population", "zip"))
 ```
 
 ### Combine Datasets
+
 ```{r}
-#add census tracts to sgip_zip
-sgip_zip_census <- left_join(sgip_zip, crosswalk, by = "zip") |> 
-  mutate("count_adjusted" = count*res_ratio) #now we have theoretical count of applications per census tract
+#combine sgip_zip_2020 and crosswalk file by zip to get a data frame with sgip applications per census tract
 #because there are multiple census tracts for one zip code, use the res_ratio to allocate what portion of the count of SGIP applications should be allocated to one census tract
+sgip_zip_census <- left_join(sgip_zip_2020, crosswalk, by = "zip") |> 
+  mutate("count_adjusted" = count*res_ratio) #now we have theoretical count of applications per census tract
 
 #make sure the count_adjusted worked by filtering down to one zipcode
 zip_90004 <- sgip_zip_census |> 
   filter(zip == 90004)
 
-#combine everything together
+#combine sgip_zip_census with acs data by tract
 combined_all <- left_join(sgip_zip_census, combine_census, by = "tract") |> 
-  mutate("percapita_application" = count_adjusted/population) |> 
-  mutate("income_group" = ifelse(percapita_income <= 48800, "low income", "not low income")) #low income in CA for 2020 48,800 threshold
+  mutate("percapita_application" = count_adjusted/population) |>
+  mutate("applications_per_thousand" = (count_adjusted/population)*1000) |>
+  mutate("log_income" = log(percapita_income)) |> 
+  mutate("income_group" = ifelse(percapita_income <= 48800, "low income", "not low income")) |> 
+  select(c(-"oth_ratio", -"tot_ratio", -"bus_ratio"))#low income in CA for 2020 48,800 threshold
 
+#check to see which census tracts are recorded as no population
+zero_pop <- combined_all |> 
+  filter(population == 0) |> 
+  summarize(zero_pop = n())
+ 
+#check to see which census tracts have NAs for populations
+na_pop <- combined_all |> 
+  filter(is.na(population)) |> 
+  summarize(na_pop = n())
+ 
+#combine zero_pop and na_pop into one data frame
+missing_pop <- cbind(zero_pop, na_pop)
+
+#check to see which census tracts have 0 for per caipta income
+zero_income <- combined_all |> 
+  filter(percapita_income == 0)|> 
+  summarize(zero_income = n())
+
+#check to see whcih census tracts have NA for per capita income
+na_income <- combined_all |> 
+  filter(is.na(percapita_income)) |> 
+  summarize(na_income = n())
+
+#combine zero_income with na-income into one data frame
+missing_income <- cbind(zero_income, na_income)
+
+#take the combined_all data frame and consolidate back to apps per zip (averaging per capita income and summing population of each census tract into zip codes)
+combined_by_zip <- combined_all |> 
+  group_by(zip) |> 
+  summarize(applications = mean(count, na.rm = TRUE), percapita_income = mean(percapita_income, na.rm = TRUE), population = sum(population, na.rm = TRUE)) |> 
+  filter(!is.na(percapita_income)) |> 
+  mutate("applications_per_1000_people" = (applications/population)*1000, "percapita_application" = applications/population)
+
+#top 5 applications per 1000 people zips
+max_app <- combined_by_zip |> 
+  filter(!is.na(percapita_income)) |> 
+  slice_max(n = 5, order_by = applications_per_1000_people)
 #effect of income categories on SGIP applications over time 
 #effect of income categories on rate of SGIP applications
 #crosswalk data files to match up zip codes with census tracts
@@ -138,41 +196,70 @@ combined_all <- left_join(sgip_zip_census, combine_census, by = "tract") |>
 #applications per capita on income per capita 
 #look at more recent years for SGIP resiliency
 
-
 ```
 
 ### Visualize Data
 
 ```{r}
-ggplot(data = combined_all, aes(x = percapita_income, y = percapita_application)) +
+#plot applications per 1000 people and per capita income
+ggplot(data = combined_by_zip, aes(x = percapita_income, y = applications_per_1000_people)) +
   geom_point() +
-  geom_smooth(method = "lm", formula = y~x, se = FALSE, size = 1) +
-  labs(x = "Per Capita Income", y = "Per Capita Application", title = "SGIP Applications Per Capita and Income Per Capita (2020)") +
+  scale_x_continuous(name="Percapita Income", labels = scales::comma) +
+  labs(x = "Per Capita Income", y = "Application Per 1000 People", title = "SGIP Applications Per 1000 people and Income Per Capita (2020)") +
   theme_minimal()
+
 ```
 
-### Run Linear Regression
+### Testing with Simple Linear Regression Model
+
+$$application_i =\beta_{0}+\beta_{1} \cdot income_i +\varepsilon_i$$
+
 ```{r}
-model <- lm(percapita_application ~ percapita_income, data = combined_all)
+#plot applications per 1000 people and per capita income (using simple linear modell)
+ggplot(data = combined_by_zip, aes(x = percapita_income, y = applications_per_1000_people)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y~x, se = TRUE, size = 1) +
+  labs(x = "Per Capita Income", y = "Applications Per 1000 People", title = "SGIP Per Capita Applications and Income Per Capita (2020)") +
+  theme_minimal()
+
+#run linear regression
+model <- lm(applications_per_1000_people ~ percapita_income, data = combined_by_zip)
+summary(model)
 
 R2 = summary(model)$r.squared
 R2
+
+b1_model <- summary(model)$coefficients["percapita_income", "Estimate"]
+
+#what will a $10,000 increase in income per capita do to applications per thousand people based on output from linear regression?
+
+print(paste0("On average, a $10,000 increase in income will increase applications per thousand people by ", round(10000*b1_model,2), "."))
 ```
 
-### Check OLS Assumptions
+### Check OLS Assumptions on Simple Linear Regression
+
 ```{r}
 #get a predicted value for every observation (generate a column of predictions called pred)
 #then use predictions to compute residuals (actual - prediction) -> add column called residuals
-predictions <- combined_all |> 
+predictions <- combined_by_zip |> 
   add_predictions(model) |> 
-  mutate(residuals = percapita_application - pred)
+  mutate(residuals = applications_per_1000_people - pred)
 
-#test assumption that errors are normally distributed
-ggplot(data = predictions) +
-  geom_histogram(aes(residuals))
+#test assumption that errors are normally distributed by creating a histogram of residuals and qq plot of residuals
+residuals_hist <- ggplot(data = predictions) +
+  geom_histogram(aes(residuals)) +
+  labs(title = "Residuals from Simple Linear Model", x = "(apps ~ income) residuals")
+
+income_qq <- ggplot(data = predictions,
+       aes(sample = residuals)) +
+  geom_qq() +
+  geom_qq_line() +
+  labs(title = "QQ Plot Simple Linear Regression Residuals")
+
+grid.arrange(residuals_hist, income_qq, ncol = 2)
 
 #test assumption that the mean of errors is zero
-mean(predictions$residuals, na.rm = TRUE)
+print(mean(predictions$residuals, na.rm = TRUE))
 
 #test assumption that error has constant variance in x
 #looking for no structured correlation
@@ -180,29 +267,275 @@ ggplot(predictions) +
   geom_point(aes(x=percapita_income, y=residuals))
 ```
 
+### Check out histogram for per capita income data
+
 ```{r}
-#unique counties
-county_list <- sgip_res_battery |> 
-  group_by(county) |> 
-  summarize(count = n()) |> 
-  select(c("county", "count"))
+#hisogram for per capita income
+ggplot(data = combined_by_zip) +
+  geom_histogram(aes(percapita_income))
 
-#find the counties with the most sgip applications
-top_sgip_county <- sgip_res_battery |> 
-  group_by(county) |> 
-  summarize(count = n()) |> 
-  slice_max(n = 10, order_by = count)
+#see that the values are not normally distributed, looks like a long right tail so might try taking the log to see if it fits better
 
-#create a data frame that shows number of sgip applications per year in each of the top 10 counties
-sgip_uptake <- sgip_res_battery |>
-  filter(county %in% top_sgip_county$county) |> 
-  group_by(month_received, county) |> 
-  summarize(count = n())
+#hisotgram for log(per capita income)
+ggplot(data = combined_by_zip) +
+  geom_histogram(aes(log(percapita_income)))
 
-#make a plot to show uptake across the different counties
-ggplot(data = sgip_uptake) +
-  geom_line(aes(x = month_received, y = count, col = county)) +
-  scale_x_continuous(breaks = seq(ceiling(min(sgip_uptake$month_received)), floor(max(sgip_uptake$month_received)), by = 2)) +
-  labs(x = "Month SGIP Application Received", y = "Number of SGIP Applications", title = "SGIP Applications for top 10 CA Counties (2020)") +
-  theme_minimal()
 ```
+
+### Run linear-log regression
+
+$$application_i =\beta_{0}+\beta_{1} \cdot log(income_i) +\varepsilon_i$$
+```{r}
+log_model <- lm(applications_per_1000_people ~ log(percapita_income), data = combined_by_zip)
+summary(log_model)
+
+R2_log_model = summary(log_model)$r.squared
+R2_log_model
+
+b1_log_model <- summary(log_model)$coefficients["log(percapita_income)", "Estimate"]
+
+```
+
+#### Interpreting results when independent variable is log-transformed
+
+```{r}
+#calculate increase in applications per thousand for 1% increase in per capita income
+one_percent_income <- b1_log_model/100
+
+print(paste0("For every 1% increase in per capita income, there is on average an increase of ", round(one_percent_income, 4), " in applications per thousand people."))
+
+#calculate increase in applications per thousand for 10% increase in per capita income
+ten_percent_income <- b1_log_model*log(1.10)
+
+print(paste0("For every 10% increase in per capita income, there is on average an increase of ", round(ten_percent_income, 4), " in applications per thousand people."))
+```
+
+# Check assumptions of OLS with linear-log model
+
+```{r}
+#get a predicted value for every observation (generate a column of predictions called pred)
+#then use predictions to compute residuals (actual - prediction) -> add column called residuals
+predictions_2 <- combined_by_zip |> 
+  add_predictions(log_model) |> 
+  mutate(residuals = applications_per_1000_people - pred)
+
+#test assumption that errors are normally distributed by creating histogram and qq plot of residuals  
+log_residuals_hist <- ggplot(data = predictions_2) +
+  geom_histogram(aes(residuals)) +
+  labs(title = "Residuals from Linear-Log Model", x = "(apps ~ log(income)) residuals")
+
+log_income_qq <- ggplot(data = predictions_2,
+       aes(sample = residuals)) +
+  geom_qq() +
+  geom_qq_line() +
+  labs(title = "QQ Plot Linear-Log Residuals")
+
+grid.arrange(log_residuals_hist, log_income_qq, ncol = 2)
+
+#test assumption that the mean of errors is zero
+mean(predictions_2$residuals, na.rm = TRUE)
+
+#test assumption that error has constant variance in x
+#looking for no structured correlation
+ggplot(predictions_2) +
+  geom_point(aes(x=percapita_income, y=residuals))
+
+```
+
+### Check out historgram of applications per 1000 people
+
+```{r}
+#hisogram for applications per 1000 people
+ggplot(data = combined_by_zip) +
+  geom_histogram(aes(applications_per_1000_people))
+
+#histogram for log(applications per 1000 people)
+ggplot(data = combined_by_zip) +
+  geom_histogram(aes(log(applications_per_1000_people)))
+```
+
+### Try Log-log model
+
+$$log(application_i) =\beta_{0}+\beta_{1} \cdot log(income_i) +\varepsilon_i$$
+```{r}
+log_log_model <- lm(log(applications_per_1000_people) ~ log(percapita_income), data = combined_by_zip)
+summary(log_log_model)
+
+R2_log_log_model = summary(log_log_model)$r.squared
+R2_log_log_model
+
+b1_log_log_model <- summary(log_log_model)$coefficients["log(percapita_income)", "Estimate"]
+```
+
+### Interpreting results when independent and dependent variable are both log transformed
+
+```{r}
+#increase in applications per thousand for 1% increase in per capita income
+print(paste0("For every 1% increase in per capita income, there is on average an increase of ", round(b1_log_log_model, 2), "% in applications per thousand people."))
+
+#calculate increase in applications per thousand for 10% increase in per capita income
+ten_percent_income_log <- (1.10^b1_log_log_model - 1) * 100
+
+print(paste0("For every 10% increase in per capita income, there is on average an increase of ", round(ten_percent_income_log, 2), "% in applications per thousand people."))
+```
+
+### Check OLS Assumptions with Log-Log Model
+
+```{r}
+#get a predicted value for every observation (generate a column of predictions called pred)
+#then use predictions to compute residuals (actual - prediction) -> add column called residuals
+predictions_3 <- combined_by_zip |> 
+  add_predictions(log_log_model) |> 
+  mutate(residuals = applications_per_1000_people - pred)
+
+#test assumption that errors are normally distributed
+log_log_residuals_hist <- ggplot(data = predictions_3) +
+  geom_histogram(aes(residuals)) +
+  labs(title = "Residuals from Log-Log Model", x = "(log(apps) ~ log(income)) residuals")
+
+log_log_income_qq <- ggplot(data = predictions_3,
+       aes(sample = residuals)) +
+  geom_qq() +
+  geom_qq_line() +
+  labs(title = "QQ Plot Log-Log Residuals")
+
+grid.arrange(log_log_residuals_hist, log_log_income_qq, ncol = 2)
+```
+
+### Run polynomial regression
+
+$$application_i =\beta_{0}+\beta_{1} \cdot income_i + \beta_{2} \cdot income_i^2 + \varepsilon_i$$
+```{r}
+#check to see if polynomial equation better suits data
+poly_model <- lm(applications_per_1000_people ~ percapita_income + I(percapita_income^2), data = combined_by_zip)
+
+summary(poly_model)
+
+#store all the values of the model 
+R2_poly_model = summary(poly_model)$r.squared
+R2_poly_adjusted = summary(poly_model)$adj.r.squared
+
+intercept_poly <- summary(poly_model)$coefficients["(Intercept)", "Estimate"]
+b1_poly <- summary(poly_model)$coefficients["percapita_income", "Estimate"]
+b2_poly <- summary(poly_model)$coefficients["I(percapita_income^2)", "Estimate"]
+
+Predictors <- c("Intercept", "per capita income", "(per capita income)^2")
+Estimate <- signif(summary(poly_model)$coefficients[,"Estimate"], digits = 3)
+SE <- signif(summary(poly_model)$coefficients[,"Std. Error"], digits = 3)
+p <- round(summary(poly_model)$coefficients[,"Pr(>|t|)"], 3)
+
+poly_model_summary <- data.frame(Predictors, Estimate, SE, p)
+
+
+gt_summary <- poly_model_summary |> 
+  gt() |> 
+  tab_header(
+    title = "Polynomial Model Output Summary"
+  ) |> 
+  tab_footnote(
+    footnote = "Observations: 1104") |> 
+  tab_footnote(
+    footnote = paste("R^2/R^2 adjusted:", round(R2_poly_model,3), "/", round(R2_poly_adjusted,3))
+  )
+
+print(gt_summary)
+
+#get a predicted value for every observation (generate a column of predictions called pred)
+#then use predictions to compute residuals (actual - prediction) -> add column called residuals
+predictions_4 <- combined_by_zip |> 
+  add_predictions(poly_model) |> 
+  mutate(residuals = applications_per_1000_people - pred)
+
+#test assumption that errors are normally distributed
+poly_residuals_hist <- ggplot(data = predictions_4) +
+  geom_histogram(aes(residuals)) +
+  labs(title = "Residuals from Polynomial Model", x = "(apps ~ income + income^2) residuals")
+
+poly_income_qq <- ggplot(data = predictions_4,
+       aes(sample = residuals)) +
+  geom_qq() +
+  geom_qq_line() +
+  labs(title = "QQ Plot Polynomial Model Residuals")
+
+grid.arrange(poly_residuals_hist, poly_income_qq, ncol = 2)
+
+#test assumption that the mean of errors is zero
+mean(predictions_4$residuals, na.rm = TRUE)
+
+#test assumption that error has constant variance in x
+#looking for no structured correlation
+ggplot(predictions_4) +
+  geom_point(aes(x=percapita_income, y=residuals))
+
+#plot the polynomial line
+ggplot(data = combined_by_zip, aes(x = percapita_income, y = applications_per_1000_people)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2), size = 1) +
+  scale_x_continuous(name="Per Capita Income", labels = scales::comma) +
+  labs(x = "Per Capita Income", y = "Applications Per 1000 People", title = "SGIP Applications Per Thousand People and Income Per Capita (2020)") +
+  theme_minimal()
+
+```
+
+### Interpretting Polynomial Regression Results 
+
+$$application_i = -0.113 + 2.73e^{-5}\cdot income_i -1.68e^{-10}\cdot income_i^2 + \varepsilon_i$$
+The effect of an increase on per capita income on applications per thousand people depends on the baseline level of per capita income. 
+What does this model predict for applications for an income of 15,000 vs. 25,000? For an income of 100,000 vs 110,000? 
+```{r}
+#create a function out of the polynomial regression
+app_pred_function <- function(income){
+  return(intercept_poly + (b1_poly * income) + (b2_poly * (income^2)))
+}
+
+#predicted applications per 1000 people for per capita income of 15,000 vs. 25,000
+pred_15000 <- app_pred_function(income = 15000)
+pred_25000 <- app_pred_function(income = 25000)
+
+diff_pred_low <- pred_25000 - pred_15000
+
+print(paste0("When moving from a per capita income of $15,000 to $25,000, predicted applications per thousand people increases by ", round(diff_pred_low, 2), "."))
+
+pred_40000 <- app_pred_function(income = 40000)
+pred_50000 <- app_pred_function(income = 50000)
+
+diff_pred_medium <- pred_50000 - pred_40000
+
+#predicted applications per 1000 people for per capita income of 100,000 vs. 110,000
+pred_100000 <- app_pred_function(income = 100000)
+pred_110000 <- app_pred_function(income = 110000)
+
+diff_pred_high <- pred_110000- pred_100000
+
+print(paste0("When moving from a per capita income of $100,000 to $110,000, predicted applications per thousand people decreases by ", round(diff_pred_high, 2), "."))
+```
+
+### Run Hypothesis Testing
+
+
+$$H_0: \beta_{1} = 0,  \beta_{2} = 0$$
+$H_A: \beta_{j}\neq 0$ for at least one $j = 1,2$
+
+```{r}
+p_val_b1 <- summary(poly_model)$coefficients["percapita_income", "Pr(>|t|)"]
+
+p_val_b2 <- summary(poly_model)$coefficients["I(percapita_income^2)", "Pr(>|t|)"]
+
+#jointly test if beta1 and beta 2 are 0, test that there is no relationship at all between y and x
+linearHypothesis(poly_model,c("percapita_income = 0", "I(percapita_income^2) = 0"))
+
+```
+I reject the null hypothesis that $\beta_{1}$ and $\beta_{2}$ both equal to 0 at the 0.1% significance level.
+
+```{r}
+linearHypothesis(poly_model, c("applications_per_1000_people = 50000", "applications_per_1000_people = 100000"))
+```
+
+### Construct Confidence Intervals
+
+```{r}
+conf_intervals<-predict(poly_model, interval = "confidence")
+conf_intervals_df <- cbind(predictions_4, conf_intervals)
+```
+
+
