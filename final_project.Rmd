@@ -67,14 +67,15 @@ sgip_zip_2020 <- sgip_2020 |>
 sgip_2020_budget <- sgip_2020 |> 
   group_by(budget_category) |> 
   summarize(count = n()) |> 
-  mutate(percent = round(((count/sum(count))*100),2))
+  mutate(percent = round(((count/sum(count))*100),2), percent_label = paste0(percent, "%"))
 
 #plot percent SGIP applications by category
 ggplot(sgip_2020_budget, aes(y = budget_category, x = percent)) +
   geom_bar(stat = "identity", fill = "skyblue3") +
   labs(title = "Percent of SGIP Applications in Each Budget Category (2020)", y = "Budget Category", x = "Percent of Applications") + 
   theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_label(label = sgip_2020_budget$percent_label, nudge_x = - 0.2)
 
 #create df of top sgip zip codes
 top_sgip_zip <- sgip_zip_2020 |> 
@@ -180,10 +181,10 @@ na_income <- combined_all |>
 #combine zero_income with na-income into one data frame
 missing_income <- cbind(zero_income, na_income)
 
-#take the combined_all data frame and consolidate back to apps per zip (averaging per capita income and summing population of each census tract into zip codes)
+#take the combined_all data frame and consolidate back to apps per zip (median of per capita income and summing population of each census tract into zip codes)
 combined_by_zip <- combined_all |> 
   group_by(zip) |> 
-  summarize(applications = mean(count, na.rm = TRUE), percapita_income = mean(percapita_income, na.rm = TRUE), population = sum(population, na.rm = TRUE)) |> 
+  summarize(applications = mean(count, na.rm = TRUE), percapita_income = median(percapita_income, na.rm = TRUE), population = sum(population, na.rm = TRUE)) |> 
   filter(!is.na(percapita_income)) |> 
   mutate("applications_per_1000_people" = (applications/population)*1000, "percapita_application" = applications/population)
 
@@ -191,7 +192,6 @@ combined_by_zip <- combined_all |>
 max_app <- combined_by_zip |> 
   filter(!is.na(percapita_income)) |> 
   slice_max(n = 5, order_by = applications_per_1000_people)
-
 
 ```
 
@@ -201,8 +201,8 @@ max_app <- combined_by_zip |>
 #plot applications per 1000 people and per capita income
 ggplot(data = combined_by_zip, aes(x = percapita_income, y = applications_per_1000_people)) +
   geom_point() +
-  scale_x_continuous(name="Percapita Income", labels = scales::comma) +
-  labs(x = "Per Capita Income", y = "Application Per 1000 People", title = "SGIP Applications Per 1000 people and Income Per Capita (2020)") +
+  scale_x_continuous(name="Median Per Capita Income", labels = scales::comma) +
+  labs(x = "Median Per Capita Income", y = "Application Per 1000 People", title = "SGIP Applications Per 1000 people and Median Income Per Capita (2020)") +
   theme_minimal()
 
 ```
@@ -216,7 +216,7 @@ $$application_i =\beta_{0}+\beta_{1} \cdot income_i +\varepsilon_i$$
 ggplot(data = combined_by_zip, aes(x = percapita_income, y = applications_per_1000_people)) +
   geom_point() +
   geom_smooth(method = "lm", formula = y~x, se = TRUE, size = 1) +
-  labs(x = "Per Capita Income", y = "Applications Per 1000 People", title = "SGIP Per Capita Applications and Income Per Capita (2020)") +
+  labs(x = "Median Per Capita Income", y = "Applications Per 1000 People", title = "SGIP Per Capita Applications and Median Income Per Capita (2020)") +
   theme_minimal()
 
 #run linear regression
@@ -267,13 +267,16 @@ ggplot(predictions) +
 ### Check out histogram for per capita income data
 
 ```{r}
-#hisogram for per capita income
+#histogram for per capita income
 ggplot(data = combined_by_zip) +
-  geom_histogram(aes(percapita_income))
+  geom_histogram(aes(percapita_income), fill = "skyblue3") +
+  scale_x_continuous(name="Median Per Capita Income", labels = scales::comma) +
+  labs(title = "Distribution of Median Per Capita Income (2020)", y = "Count") +
+  theme_minimal()
 
 #see that the values are not normally distributed, looks like a long right tail so might try taking the log to see if it fits better
 
-#hisotgram for log(per capita income)
+#histogram for log(per capita income)
 ggplot(data = combined_by_zip) +
   geom_histogram(aes(log(percapita_income)))
 
@@ -302,12 +305,12 @@ b1_log_model <- summary(log_model)$coefficients["log(percapita_income)", "Estima
 #calculate increase in applications per thousand for 1% increase in per capita income
 one_percent_income <- b1_log_model/100
 
-print(paste0("For every 1% increase in per capita income, there is on average an increase of ", round(one_percent_income, 4), " in applications per thousand people."))
+print(paste0("For every 1% increase in median per capita income, there is on average an increase of ", round(one_percent_income, 4), " in applications per thousand people."))
 
 #calculate increase in applications per thousand for 10% increase in per capita income
 ten_percent_income <- b1_log_model*log(1.10)
 
-print(paste0("For every 10% increase in per capita income, there is on average an increase of ", round(ten_percent_income, 4), " in applications per thousand people."))
+print(paste0("For every 10% increase in median per capita income, there is on average an increase of ", round(ten_percent_income, 4), " in applications per thousand people."))
 ```
 
 # Check assumptions of OLS with linear-log model
@@ -345,9 +348,11 @@ ggplot(predictions_2) +
 ### Check out historgram of applications per 1000 people
 
 ```{r}
-#hisogram for applications per 1000 people
+#histogram for applications per 1000 people
 ggplot(data = combined_by_zip) +
-  geom_histogram(aes(applications_per_1000_people))
+  geom_histogram(aes(applications_per_1000_people), fill = "skyblue3") +
+  labs(x = "SGIP Applictions Per Thousand People", y = "Count", title = "Distribution of Applications Per Thousand People (2020)") +
+  theme_minimal()
 
 #histogram for log(applications per 1000 people)
 ggplot(data = combined_by_zip) +
@@ -374,12 +379,12 @@ b1_log_log_model <- summary(log_log_model)$coefficients["log(percapita_income)",
 
 ```{r}
 #increase in applications per thousand for 1% increase in per capita income
-print(paste0("For every 1% increase in per capita income, there is on average an increase of ", round(b1_log_log_model, 2), "% in applications per thousand people."))
+print(paste0("For every 1% increase in median per capita income, there is on average an increase of ", round(b1_log_log_model, 2), "% in applications per thousand people."))
 
 #calculate increase in applications per thousand for 10% increase in per capita income
 ten_percent_income_log <- (1.10^b1_log_log_model - 1) * 100
 
-print(paste0("For every 10% increase in per capita income, there is on average an increase of ", round(ten_percent_income_log, 2), "% in applications per thousand people."))
+print(paste0("For every 10% increase in median per capita income, there is on average an increase of ", round(ten_percent_income_log, 2), "% in applications per thousand people."))
 ```
 
 ### Check OLS Assumptions with Log-Log Model
@@ -415,7 +420,7 @@ poly_model <- lm(applications_per_1000_people ~ percapita_income + I(percapita_i
 summary(poly_model)
 
 #store all the values of the model 
-R2_poly_model = summary(poly_model)$r.squared
+R2_poly_model = summary(poly_model)$r.squared 
 R2_poly_adjusted = summary(poly_model)$adj.r.squared
 
 intercept_poly <- summary(poly_model)$coefficients["(Intercept)", "Estimate"]
@@ -425,7 +430,7 @@ b2_poly <- summary(poly_model)$coefficients["I(percapita_income^2)", "Estimate"]
 Predictors <- c("Intercept", "per capita income", "(per capita income)^2")
 Estimate <- signif(summary(poly_model)$coefficients[,"Estimate"], digits = 3)
 SE <- signif(summary(poly_model)$coefficients[,"Std. Error"], digits = 3)
-p <- round(summary(poly_model)$coefficients[,"Pr(>|t|)"], 3)
+p <- round(summary(poly_model)$coefficients[,"Pr(>|t|)"], 4)
 
 poly_model_summary <- data.frame(Predictors, Estimate, SE, p)
 
@@ -452,13 +457,15 @@ predictions_4 <- combined_by_zip |>
 #test assumption that errors are normally distributed
 poly_residuals_hist <- ggplot(data = predictions_4) +
   geom_histogram(aes(residuals)) +
-  labs(title = "Residuals from Polynomial Model", x = "(apps ~ income + income^2) residuals")
+  labs(title = "Residuals from Polynomial Model", x = "(apps ~ income + income^2) residuals") +
+  theme_minimal()
 
 poly_income_qq <- ggplot(data = predictions_4,
        aes(sample = residuals)) +
   geom_qq() +
   geom_qq_line() +
-  labs(title = "QQ Plot Polynomial Model Residuals")
+  labs(title = "QQ Plot Polynomial Model Residuals") +
+  theme_minimal()
 
 grid.arrange(poly_residuals_hist, poly_income_qq, ncol = 2)
 
@@ -474,16 +481,16 @@ ggplot(predictions_4) +
 ggplot(data = combined_by_zip, aes(x = percapita_income, y = applications_per_1000_people)) +
   geom_point() +
   geom_smooth(method = "lm", formula = y ~ x + I(x^2), size = 1) +
-  scale_x_continuous(name="Per Capita Income", labels = scales::comma) +
-  labs(x = "Per Capita Income", y = "Applications Per 1000 People", title = "SGIP Applications Per Thousand People and Income Per Capita (2020)") +
+  scale_x_continuous(name="Median Per Capita Income", labels = scales::comma) +
+  labs(x = "Median Per Capita Income", y = "Applications Per 1000 People", title = "SGIP Applications Per Thousand People and Median Income Per Capita (2020)") +
   theme_minimal()
 
 ```
 
 ### Interpretting Polynomial Regression Results 
 
-$$application_i = -0.113 + 2.73e^{-5}\cdot income_i -1.68e^{-10}\cdot income_i^2 + \varepsilon_i$$
-The effect of an increase on per capita income on applications per thousand people depends on the baseline level of per capita income. 
+$$application_i = -0.169 + 2.95e^{-5}\cdot income_i -1.80e^{-10}\cdot income_i^2 + \varepsilon_i$$
+The effect of an increase on median per capita income on applications per thousand people depends on the baseline level of mdeian per capita income. 
 What does this model predict for applications for an income of 15,000 vs. 25,000? For an income of 60,000 vs. 70,000? For an income of 100,000 vs 110,000? 
 ```{r}
 #create a function out of the polynomial regression
@@ -497,14 +504,14 @@ pred_25000 <- app_pred_function(income = 25000)
 
 diff_pred_low <- pred_25000 - pred_15000
 
-print(paste0("When moving from a per capita income of $15,000 to $25,000, predicted applications per thousand people increases by ", round(diff_pred_low, 2), "."))
+print(paste0("When moving from a median per capita income of $15,000 to $25,000, predicted applications per thousand people increases by ", round(diff_pred_low, 2), "."))
 
 pred_60000 <- app_pred_function(income = 60000)
 pred_70000 <- app_pred_function(income = 70000)
 
 diff_pred_mid<- pred_60000 - pred_70000
 
-print(paste0("When moving from a per capita income of $60,000 to $70,000, predicted applications per thousand people decreases by ", round(diff_pred_mid, 2), "."))
+print(paste0("When moving from a median per capita income of $60,000 to $70,000, predicted applications per thousand people decreases by ", round(diff_pred_mid, 2), "."))
 
 #predicted applications per 1000 people for per capita income of 100,000 vs. 110,000
 pred_100000 <- app_pred_function(income = 100000)
@@ -512,7 +519,7 @@ pred_110000 <- app_pred_function(income = 110000)
 
 diff_pred_high <- pred_110000- pred_100000
 
-print(paste0("When moving from a per capita income of $100,000 to $110,000, predicted applications per thousand people decreases by ", round(diff_pred_high, 2), "."))
+print(paste0("When moving from a median per capita income of $100,000 to $110,000, predicted applications per thousand people decreases by ", round(diff_pred_high, 2), "."))
 ```
 
 ### Run Hypothesis Testing
