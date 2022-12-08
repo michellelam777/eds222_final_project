@@ -509,7 +509,7 @@ print(paste0("When moving from a median per capita income of $15,000 to $25,000,
 pred_60000 <- app_pred_function(income = 60000)
 pred_70000 <- app_pred_function(income = 70000)
 
-diff_pred_mid<- pred_60000 - pred_70000
+diff_pred_mid<- pred_70000 - pred_60000
 
 print(paste0("When moving from a median per capita income of $60,000 to $70,000, predicted applications per thousand people decreases by ", round(diff_pred_mid, 2), "."))
 
