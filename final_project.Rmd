@@ -8,7 +8,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-# Load all the packages needed here
+#Load all the packages needed here
 library(tidyverse)
 library(readr)
 library(gt)
@@ -19,12 +19,12 @@ library(modelr)
 library(gridExtra)
 library(car)
 
-# setting my file path
+#setting my file path
 rootdir <- ("/Users/michelle/Documents/UCSB Grad School/Courses/eds_222")
 setwd(file.path(rootdir,"eds222_final_project"))
 datadir <-(file.path(rootdir, "eds222_final_project","data"))
 
-#
+#accessing stored API key for census data
 census_token <- Sys.getenv('CENSUS_KEY')
 census_api_key(census_token)
 ```
@@ -36,7 +36,7 @@ census_api_key(census_token)
 sgip <- read_csv(file.path(datadir,"sgip_weekly_data.csv")) |> 
   janitor::clean_names()
 
-#filter down to rebates for just residential electrochemcial storage that were not cancelled, format date and zip, create columns for pre_post_resiliency
+#filter down to rebates for just residential electrochemcial storage that were not cancelled, format date and zip
 sgip_res_battery <- sgip |> 
   filter(equipment_type == "Electrochemical Storage", host_customer_sector %in% c("Residential", "Single Family"), budget_classification != "Cancelled") |>
   select("city", "county", "zip", "date_received", "budget_category", "host_customer_sector") |> 
@@ -44,10 +44,6 @@ sgip_res_battery <- sgip |>
   mutate("date_received" = as.Date(date_received, format = "%m/%d/%y")) |>
   mutate("year_received" = year(date_received)) |>
   mutate("month_received" = month(date_received)) |> 
-  mutate("pre_post_resiliency" = ifelse(
-    year_received >= 2020, 
-    "post resiliency",
-    "pre resiliency")) |> 
   mutate("zip" = ifelse(
     str_length(zip) == 10, 
     substring(zip, 1, nchar(zip)-5),
@@ -57,23 +53,30 @@ sgip_res_battery <- sgip |>
 sgip_2020 <- sgip_res_battery |> 
   filter(year_received == 2020)
 
-sgip_2020_budget <- sgip_2020 |> 
-  group_by(budget_category) |> 
-  summarize(count = n())
-
-sgip_2020_customer_sector <- sgip_2020 |> 
-  group_by(host_customer_sector) |> 
-  summarize(count = n())
-
-#create summary data frame showing number of applications by zip code in 2020
+#create dataframe showing count of applications in each zip code for 2020
 sgip_zip_2020 <- sgip_2020 |> 
   group_by(zip) |> 
   summarize(count = n())
+
 ```
 
 ### Exploratory Data Visualization of SGIP Data
 
 ```{r}
+#create a summary data frame showing applications by budget category
+sgip_2020_budget <- sgip_2020 |> 
+  group_by(budget_category) |> 
+  summarize(count = n()) |> 
+  mutate(percent = round(((count/sum(count))*100),2))
+
+#plot percent SGIP applications by category
+ggplot(sgip_2020_budget, aes(y = budget_category, x = percent)) +
+  geom_bar(stat = "identity", fill = "skyblue3") +
+  labs(title = "Percent of SGIP Applications in Each Budget Category (2020)", y = "Budget Category", x = "Percent of Applications") + 
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#create df of top sgip zip codes
 top_sgip_zip <- sgip_zip_2020 |> 
   slice_max(n = 10, order_by = count) |> 
   gt()
@@ -188,13 +191,7 @@ combined_by_zip <- combined_all |>
 max_app <- combined_by_zip |> 
   filter(!is.na(percapita_income)) |> 
   slice_max(n = 5, order_by = applications_per_1000_people)
-#effect of income categories on SGIP applications over time 
-#effect of income categories on rate of SGIP applications
-#crosswalk data files to match up zip codes with census tracts
-#on average just take one year
-#population from ACS, higher income areas have more people
-#applications per capita on income per capita 
-#look at more recent years for SGIP resiliency
+
 
 ```
 
@@ -286,12 +283,15 @@ ggplot(data = combined_by_zip) +
 
 $$application_i =\beta_{0}+\beta_{1} \cdot log(income_i) +\varepsilon_i$$
 ```{r}
+#run the linear-log model
 log_model <- lm(applications_per_1000_people ~ log(percapita_income), data = combined_by_zip)
 summary(log_model)
 
+#store the r squared value
 R2_log_model = summary(log_model)$r.squared
 R2_log_model
 
+#store b1 coefficient from log model
 b1_log_model <- summary(log_model)$coefficients["log(percapita_income)", "Estimate"]
 
 ```
@@ -358,12 +358,15 @@ ggplot(data = combined_by_zip) +
 
 $$log(application_i) =\beta_{0}+\beta_{1} \cdot log(income_i) +\varepsilon_i$$
 ```{r}
+#run the log-log model
 log_log_model <- lm(log(applications_per_1000_people) ~ log(percapita_income), data = combined_by_zip)
 summary(log_log_model)
 
+#store the r squared value
 R2_log_log_model = summary(log_log_model)$r.squared
 R2_log_log_model
 
+#store the b1 coefficient of the log-log model
 b1_log_log_model <- summary(log_log_model)$coefficients["log(percapita_income)", "Estimate"]
 ```
 
@@ -426,7 +429,7 @@ p <- round(summary(poly_model)$coefficients[,"Pr(>|t|)"], 3)
 
 poly_model_summary <- data.frame(Predictors, Estimate, SE, p)
 
-
+#create a nice table to display model outputs
 gt_summary <- poly_model_summary |> 
   gt() |> 
   tab_header(
@@ -481,7 +484,7 @@ ggplot(data = combined_by_zip, aes(x = percapita_income, y = applications_per_10
 
 $$application_i = -0.113 + 2.73e^{-5}\cdot income_i -1.68e^{-10}\cdot income_i^2 + \varepsilon_i$$
 The effect of an increase on per capita income on applications per thousand people depends on the baseline level of per capita income. 
-What does this model predict for applications for an income of 15,000 vs. 25,000? For an income of 100,000 vs 110,000? 
+What does this model predict for applications for an income of 15,000 vs. 25,000? For an income of 60,000 vs. 70,000? For an income of 100,000 vs 110,000? 
 ```{r}
 #create a function out of the polynomial regression
 app_pred_function <- function(income){
@@ -496,10 +499,12 @@ diff_pred_low <- pred_25000 - pred_15000
 
 print(paste0("When moving from a per capita income of $15,000 to $25,000, predicted applications per thousand people increases by ", round(diff_pred_low, 2), "."))
 
-pred_40000 <- app_pred_function(income = 40000)
-pred_50000 <- app_pred_function(income = 50000)
+pred_60000 <- app_pred_function(income = 60000)
+pred_70000 <- app_pred_function(income = 70000)
 
-diff_pred_medium <- pred_50000 - pred_40000
+diff_pred_mid<- pred_60000 - pred_70000
+
+print(paste0("When moving from a per capita income of $60,000 to $70,000, predicted applications per thousand people decreases by ", round(diff_pred_mid, 2), "."))
 
 #predicted applications per 1000 people for per capita income of 100,000 vs. 110,000
 pred_100000 <- app_pred_function(income = 100000)
@@ -527,14 +532,13 @@ linearHypothesis(poly_model,c("percapita_income = 0", "I(percapita_income^2) = 0
 ```
 I reject the null hypothesis that $\beta_{1}$ and $\beta_{2}$ both equal to 0 at the 0.1% significance level.
 
-```{r}
-linearHypothesis(poly_model, c("applications_per_1000_people = 50000", "applications_per_1000_people = 100000"))
-```
-
 ### Construct Confidence Intervals
 
 ```{r}
+#create an array of confidence intervals from model predictions
 conf_intervals<-predict(poly_model, interval = "confidence")
+
+#combine confidence intervals with predictions data frame for polynomial regression model
 conf_intervals_df <- cbind(predictions_4, conf_intervals)
 ```
 
